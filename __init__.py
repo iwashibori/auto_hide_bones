@@ -61,7 +61,7 @@ class AUTOHIDE_OT_on_play(Operator):
             bpy.ops.screen.animation_play()
             return {"FINISHED"}
 
-        if not getattr(context.scene, "autohide_on_play", True) or context.mode != "POSE":
+        if not getattr(context.scene, "autohide_enabled", True) or context.mode != "POSE":
             bpy.ops.screen.animation_play()
             return {"FINISHED"}
 
@@ -70,20 +70,9 @@ class AUTOHIDE_OT_on_play(Operator):
             if area.type != "VIEW_3D":
                 continue
             for space in area.spaces:
-                if space.type != "VIEW_3D":
-                    continue
-                if hasattr(space, "show_object_viewport_armature"):
-                    self._original_visibility[space] = (
-                        "show_object_viewport_armature",
-                        space.show_object_viewport_armature,
-                    )
-                    space.show_object_viewport_armature = False
-                elif hasattr(space.overlay, "show_armatures"):
-                    self._original_visibility[space] = (
-                        "overlay.show_armatures",
-                        space.overlay.show_armatures,
-                    )
-                    space.overlay.show_armatures = False
+                if space.type == "VIEW_3D" and space.overlay.show_bones:
+                    self._original_visibility[space] = True
+                    space.overlay.show_bones = False
 
         bpy.ops.screen.animation_play()
         wm = context.window_manager
@@ -92,14 +81,10 @@ class AUTOHIDE_OT_on_play(Operator):
         return {"RUNNING_MODAL"}
 
     def _restore(self, context):
-        for space, (attr, val) in self._original_visibility.items():
+        for space, was_visible in self._original_visibility.items():
             try:
-                if "." in attr:
-                    sub_attr = attr.split(".", 1)[1]
-                    setattr(space.overlay, sub_attr, val)
-                else:
-                    setattr(space, attr, val)
-            except (ReferenceError, AttributeError):
+                space.overlay.show_bones = was_visible
+            except ReferenceError:
                 pass
         self._original_visibility = {}
         if self._timer:
@@ -127,7 +112,7 @@ class AUTOHIDE_OT_on_transform(Operator):
         return {"PASS_THROUGH"}
 
     def invoke(self, context, _event):
-        if not getattr(context.scene, "autohide_on_transform", True):
+        if not getattr(context.scene, "autohide_enabled", True):
             return self._run_transform(context)
 
         self._original_visibility = {}
@@ -162,25 +147,13 @@ class AUTOHIDE_OT_on_transform(Operator):
 
 
 
-class AUTOHIDE_OT_toggle_on_play(Operator):
-    bl_idname = "autohide.toggle_on_play"
-    bl_label = "Toggle Auto Hide on Play"
-    bl_description = "Toggle Auto Hide on Play on/off"
+class AUTOHIDE_OT_toggle(Operator):
+    bl_idname = "autohide.toggle"
+    bl_label = "Toggle Auto Hide"
+    bl_description = "Toggle Auto Hide on/off"
 
     def execute(self, context):
-        context.scene.autohide_on_play = not context.scene.autohide_on_play
-        for area in context.screen.areas:
-            area.tag_redraw()
-        return {"FINISHED"}
-
-
-class AUTOHIDE_OT_toggle_on_transform(Operator):
-    bl_idname = "autohide.toggle_on_transform"
-    bl_label = "Toggle Auto Hide on Transform"
-    bl_description = "Toggle Auto Hide on Transform on/off"
-
-    def execute(self, context):
-        context.scene.autohide_on_transform = not context.scene.autohide_on_transform
+        context.scene.autohide_enabled = not context.scene.autohide_enabled
         for area in context.screen.areas:
             area.tag_redraw()
         return {"FINISHED"}
@@ -231,14 +204,9 @@ def _sync_play_kmi(km_name, key, ctrl, shift, alt):
                 _set_kmi_key(kmi, key, ctrl, shift, alt)
 
 
-def _update_toggle_play_keymap(self, _context):
-    _sync_toggle_kmi("autohide.toggle_on_play", self.toggle_play_key,
-                     self.toggle_play_ctrl, self.toggle_play_shift, self.toggle_play_alt)
-
-
-def _update_toggle_transform_keymap(self, _context):
-    _sync_toggle_kmi("autohide.toggle_on_transform", self.toggle_transform_key,
-                     self.toggle_transform_ctrl, self.toggle_transform_shift, self.toggle_transform_alt)
+def _update_toggle_keymap(self, _context):
+    _sync_toggle_kmi("autohide.toggle", self.toggle_key,
+                     self.toggle_ctrl, self.toggle_shift, self.toggle_alt)
 
 
 def _sync_toggle_kmi(idname, key, ctrl, shift, alt):
@@ -274,25 +242,16 @@ class AutoHideBonesPreferences(bpy.types.AddonPreferences):
     play_shift: BoolProperty(name="Shift", update=_update_play_keymap)
     play_alt: BoolProperty(name="Alt", update=_update_play_keymap)
 
-    # Toggle on Play hotkey
-    toggle_play_key: EnumProperty(
+    # Toggle hotkey
+    toggle_key: EnumProperty(
         name="Key",
         items=_KEY_ITEMS,
-        update=_update_toggle_play_keymap,
+        default="C",
+        update=_update_toggle_keymap,
     )
-    toggle_play_ctrl: BoolProperty(name="Ctrl", update=_update_toggle_play_keymap)
-    toggle_play_shift: BoolProperty(name="Shift", update=_update_toggle_play_keymap)
-    toggle_play_alt: BoolProperty(name="Alt", update=_update_toggle_play_keymap)
-
-    # Toggle on Transform hotkey
-    toggle_transform_key: EnumProperty(
-        name="Key",
-        items=_KEY_ITEMS,
-        update=_update_toggle_transform_keymap,
-    )
-    toggle_transform_ctrl: BoolProperty(name="Ctrl", update=_update_toggle_transform_keymap)
-    toggle_transform_shift: BoolProperty(name="Shift", update=_update_toggle_transform_keymap)
-    toggle_transform_alt: BoolProperty(name="Alt", update=_update_toggle_transform_keymap)
+    toggle_ctrl: BoolProperty(name="Ctrl", update=_update_toggle_keymap)
+    toggle_shift: BoolProperty(name="Shift", update=_update_toggle_keymap)
+    toggle_alt: BoolProperty(name="Alt", default=True, update=_update_toggle_keymap)
 
     def draw(self, _context):
         layout = self.layout
@@ -303,11 +262,8 @@ class AutoHideBonesPreferences(bpy.types.AddonPreferences):
         # Auto Hide on Play
         self._draw_hotkey_row(box, "Auto Hide on Play", "play_key", "play_ctrl", "play_shift", "play_alt")
         box.separator()
-        # Toggle on Play
-        self._draw_hotkey_row(box, "Toggle on Play", "toggle_play_key", "toggle_play_ctrl", "toggle_play_shift", "toggle_play_alt")
-        box.separator()
-        # Toggle on Transform
-        self._draw_hotkey_row(box, "Toggle on Transform", "toggle_transform_key", "toggle_transform_ctrl", "toggle_transform_shift", "toggle_transform_alt")
+        # Toggle Auto Hide
+        self._draw_hotkey_row(box, "Toggle Auto Hide", "toggle_key", "toggle_ctrl", "toggle_shift", "toggle_alt")
 
     def _draw_hotkey_row(self, box, label, key_prop, ctrl_prop, shift_prop, alt_prop):
         split = box.split(factor=0.4)
@@ -325,16 +281,12 @@ class AutoHideBonesPreferences(bpy.types.AddonPreferences):
 #  UI
 # ----------------------------------------------------------------
 
-def _draw_playback_controls(self, context):
-    self.layout.prop(context.scene, "autohide_on_play", text="Auto Hide", **_get_icon())
-
-
 def _draw_viewport_header(self, context):
     if context.mode != "POSE":
         return
     layout = self.layout
     layout.separator()
-    layout.prop(context.scene, "autohide_on_transform", text="", **_get_icon())
+    layout.prop(context.scene, "autohide_enabled", text="", **_get_icon())
 
 
 # ----------------------------------------------------------------
@@ -359,8 +311,11 @@ def _register_keymaps():
         p = prefs.preferences
         play_key = p.play_key or "SPACE"
         play_ctrl, play_shift, play_alt = p.play_ctrl, p.play_shift, p.play_alt
+        toggle_key = p.toggle_key or "C"
+        toggle_ctrl, toggle_shift, toggle_alt = p.toggle_ctrl, p.toggle_shift, p.toggle_alt
     else:
         play_key, play_ctrl, play_shift, play_alt = "SPACE", False, False, False
+        toggle_key, toggle_ctrl, toggle_shift, toggle_alt = "C", False, False, True
 
     # Pose Mode
     km = kc.keymaps.new(name="Pose", space_type="EMPTY")
@@ -371,12 +326,20 @@ def _register_keymaps():
         kmi = km.keymap_items.new("autohide.on_transform", key, "PRESS")
         kmi.properties.mode = mode
         _addon_keymaps.append((km, kmi))
+    if toggle_key != "NONE":
+        kmi = km.keymap_items.new("autohide.toggle", toggle_key, "PRESS",
+                                   ctrl=toggle_ctrl, shift=toggle_shift, alt=toggle_alt)
+        _addon_keymaps.append((km, kmi))
 
     # Animation (Timeline / Dopesheet / Graph Editor etc.)
     km_anim = kc.keymaps.new(name="Animation", space_type="EMPTY")
     kmi = km_anim.keymap_items.new("autohide.on_play", play_key, "PRESS",
                                     ctrl=play_ctrl, shift=play_shift, alt=play_alt)
     _addon_keymaps.append((km_anim, kmi))
+    if toggle_key != "NONE":
+        kmi = km_anim.keymap_items.new("autohide.toggle", toggle_key, "PRESS",
+                                        ctrl=toggle_ctrl, shift=toggle_shift, alt=toggle_alt)
+        _addon_keymaps.append((km_anim, kmi))
 
 
 # ----------------------------------------------------------------
@@ -386,8 +349,7 @@ def _register_keymaps():
 _CLASSES = (
     AUTOHIDE_OT_on_play,
     AUTOHIDE_OT_on_transform,
-    AUTOHIDE_OT_toggle_on_play,
-    AUTOHIDE_OT_toggle_on_transform,
+    AUTOHIDE_OT_toggle,
     AutoHideBonesPreferences,
 )
 
@@ -401,19 +363,12 @@ def register():
     pcoll.load("AUTOHIDE", os.path.join(icon_dir, "AUTOHIDE.png"), "IMAGE")
     _preview_collections["main"] = pcoll
 
-    bpy.types.Scene.autohide_on_play = BoolProperty(
-        name="Auto Hide on Play",
-        description="Auto hide armature during animation playback",
-        default=False,
-    )
-    bpy.types.Scene.autohide_on_transform = BoolProperty(
-        name="Auto Hide on Transform",
-        description="Auto hide bones during transform (G/R/S)",
+    bpy.types.Scene.autohide_enabled = BoolProperty(
+        name="Auto Hide Bones",
+        description="Auto hide bones during playback and transform",
         default=False,
     )
 
-    if hasattr(bpy.types, "DOPESHEET_HT_playback_controls"):
-        bpy.types.DOPESHEET_HT_playback_controls.append(_draw_playback_controls)
     bpy.types.VIEW3D_MT_editor_menus.append(_draw_viewport_header)
 
     _register_keymaps()
@@ -431,18 +386,14 @@ def unregister():
         if not km:
             continue
         remove = [kmi for kmi in km.keymap_items
-                  if kmi.idname in ("autohide.toggle_on_play", "autohide.toggle_on_transform")]
+                  if kmi.idname == "autohide.toggle"]
         for kmi in remove:
             km.keymap_items.remove(kmi)
 
-    if hasattr(bpy.types, "DOPESHEET_HT_playback_controls"):
-        bpy.types.DOPESHEET_HT_playback_controls.remove(_draw_playback_controls)
     bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_header)
 
-    if hasattr(bpy.types.Scene, "autohide_on_play"):
-        del bpy.types.Scene.autohide_on_play
-    if hasattr(bpy.types.Scene, "autohide_on_transform"):
-        del bpy.types.Scene.autohide_on_transform
+    if hasattr(bpy.types.Scene, "autohide_enabled"):
+        del bpy.types.Scene.autohide_enabled
 
     for pcoll in _preview_collections.values():
         bpy.utils.previews.remove(pcoll)
