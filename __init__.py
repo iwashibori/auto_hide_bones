@@ -37,6 +37,17 @@ def _get_icon():
     return {"icon": "BONE_DATA"}
 
 
+def _get_hide_mode():
+    prefs = None
+    for key in (__name__, __package__ or ""):
+        prefs = bpy.context.preferences.addons.get(key)
+        if prefs:
+            break
+    if prefs:
+        return prefs.preferences.hide_mode
+    return "BONES"
+
+
 # ----------------------------------------------------------------
 #  Operators
 # ----------------------------------------------------------------
@@ -61,18 +72,26 @@ class AUTOHIDE_OT_on_play(Operator):
             bpy.ops.screen.animation_play()
             return {"FINISHED"}
 
-        if not getattr(context.scene, "autohide_enabled", True) or context.mode != "POSE":
+        if not getattr(context.scene, "autohide_on_play", False) or context.mode != "POSE":
             bpy.ops.screen.animation_play()
             return {"FINISHED"}
 
+        self._hide_mode = _get_hide_mode()
         self._original_visibility = {}
         for area in context.screen.areas:
             if area.type != "VIEW_3D":
                 continue
             for space in area.spaces:
-                if space.type == "VIEW_3D" and space.overlay.show_bones:
-                    self._original_visibility[space] = True
-                    space.overlay.show_bones = False
+                if space.type != "VIEW_3D":
+                    continue
+                if self._hide_mode == "OVERLAYS":
+                    if space.overlay.show_overlays:
+                        self._original_visibility[space] = True
+                        space.overlay.show_overlays = False
+                else:
+                    if space.overlay.show_bones:
+                        self._original_visibility[space] = True
+                        space.overlay.show_bones = False
 
         bpy.ops.screen.animation_play()
         wm = context.window_manager
@@ -81,9 +100,10 @@ class AUTOHIDE_OT_on_play(Operator):
         return {"RUNNING_MODAL"}
 
     def _restore(self, context):
+        attr = "show_overlays" if getattr(self, '_hide_mode', 'BONES') == "OVERLAYS" else "show_bones"
         for space, was_visible in self._original_visibility.items():
             try:
-                space.overlay.show_bones = was_visible
+                setattr(space.overlay, attr, was_visible)
             except ReferenceError:
                 pass
         self._original_visibility = {}
@@ -112,15 +132,22 @@ class AUTOHIDE_OT_on_transform(Operator):
         return {"PASS_THROUGH"}
 
     def invoke(self, context, _event):
-        if not getattr(context.scene, "autohide_enabled", True):
+        if not getattr(context.scene, "autohide_on_transform", False):
             return self._run_transform(context)
 
+        self._hide_mode = _get_hide_mode()
         self._original_visibility = {}
         if context.area and context.area.type == "VIEW_3D":
             space = context.space_data
-            if space and space.type == "VIEW_3D" and space.overlay.show_bones:
-                self._original_visibility[space] = True
-                space.overlay.show_bones = False
+            if space and space.type == "VIEW_3D":
+                if self._hide_mode == "OVERLAYS":
+                    if space.overlay.show_overlays:
+                        self._original_visibility[space] = True
+                        space.overlay.show_overlays = False
+                else:
+                    if space.overlay.show_bones:
+                        self._original_visibility[space] = True
+                        space.overlay.show_bones = False
 
         self._run_transform(context)
         context.window_manager.modal_handler_add(self)
@@ -139,9 +166,10 @@ class AUTOHIDE_OT_on_transform(Operator):
         return {"FINISHED"}
 
     def _restore(self):
+        attr = "show_overlays" if getattr(self, '_hide_mode', 'BONES') == "OVERLAYS" else "show_bones"
         for space, was_visible in self._original_visibility.items():
             try:
-                space.overlay.show_bones = was_visible
+                setattr(space.overlay, attr, was_visible)
             except ReferenceError:
                 pass
 
@@ -153,7 +181,10 @@ class AUTOHIDE_OT_toggle(Operator):
     bl_description = "Toggle Auto Hide on/off"
 
     def execute(self, context):
-        context.scene.autohide_enabled = not context.scene.autohide_enabled
+        scene = context.scene
+        new_state = not (scene.autohide_on_play or scene.autohide_on_transform)
+        scene.autohide_on_play = new_state
+        scene.autohide_on_transform = new_state
         for area in context.screen.areas:
             area.tag_redraw()
         return {"FINISHED"}
@@ -231,6 +262,15 @@ def _sync_toggle_kmi(idname, key, ctrl, shift, alt):
 class AutoHideBonesPreferences(bpy.types.AddonPreferences):
     bl_idname = __name__
 
+    hide_mode: EnumProperty(
+        name="Hide Mode",
+        items=[
+            ("BONES", "Bones Only", "Hide bones only"),
+            ("OVERLAYS", "All Overlays", "Hide all overlays"),
+        ],
+        default="OVERLAYS",
+    )
+
     # Auto Hide on Play hotkey
     play_key: EnumProperty(
         name="Key",
@@ -255,6 +295,10 @@ class AutoHideBonesPreferences(bpy.types.AddonPreferences):
 
     def draw(self, _context):
         layout = self.layout
+
+        box = layout.box()
+        box.label(text="Hide Mode", icon="OVERLAY")
+        box.row().prop(self, "hide_mode", expand=True)
 
         box = layout.box()
         box.label(text="Keymaps", icon="KEYINGSET")
@@ -286,7 +330,9 @@ def _draw_viewport_header(self, context):
         return
     layout = self.layout
     layout.separator()
-    layout.prop(context.scene, "autohide_enabled", text="", **_get_icon())
+    layout.operator("autohide.toggle", text="",
+                    depress=context.scene.autohide_on_play or context.scene.autohide_on_transform,
+                    **_get_icon())
 
 
 # ----------------------------------------------------------------
@@ -363,12 +409,16 @@ def register():
     pcoll.load("AUTOHIDE", os.path.join(icon_dir, "AUTOHIDE.png"), "IMAGE")
     _preview_collections["main"] = pcoll
 
-    bpy.types.Scene.autohide_enabled = BoolProperty(
-        name="Auto Hide Bones",
-        description="Auto hide bones during playback and transform",
+    bpy.types.Scene.autohide_on_play = BoolProperty(
+        name="Auto Hide on Play",
+        description="Auto hide bones during animation playback",
         default=False,
     )
-
+    bpy.types.Scene.autohide_on_transform = BoolProperty(
+        name="Auto Hide on Transform",
+        description="Auto hide bones during transform (G/R/S)",
+        default=False,
+    )
     bpy.types.VIEW3D_MT_editor_menus.append(_draw_viewport_header)
 
     _register_keymaps()
@@ -392,8 +442,10 @@ def unregister():
 
     bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_header)
 
-    if hasattr(bpy.types.Scene, "autohide_enabled"):
-        del bpy.types.Scene.autohide_enabled
+    if hasattr(bpy.types.Scene, "autohide_on_play"):
+        del bpy.types.Scene.autohide_on_play
+    if hasattr(bpy.types.Scene, "autohide_on_transform"):
+        del bpy.types.Scene.autohide_on_transform
 
     for pcoll in _preview_collections.values():
         bpy.utils.previews.remove(pcoll)
