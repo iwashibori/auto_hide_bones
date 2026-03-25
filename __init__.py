@@ -58,9 +58,6 @@ class AUTOHIDE_OT_on_play(Operator):
     bl_description = "Hide armature and play animation. Restore visibility when stopped"
     bl_options = {"REGISTER"}
 
-    _timer = None
-    _original_visibility = {}
-
     def modal(self, context, event):
         if event.type == "TIMER" and not context.screen.is_animation_playing:
             self._restore(context)
@@ -68,52 +65,56 @@ class AUTOHIDE_OT_on_play(Operator):
         return {"PASS_THROUGH"}
 
     def invoke(self, context, _event):
+        # If already playing, just stop (the running modal will restore)
         if context.screen.is_animation_playing:
             bpy.ops.screen.animation_play()
             return {"FINISHED"}
 
-        if not getattr(context.scene, "autohide_on_play", False) or context.mode != "POSE":
-            bpy.ops.screen.animation_play()
-            return {"FINISHED"}
+        should_hide = (
+            getattr(context.scene, "autohide_on_play", False)
+            and context.mode == "POSE"
+        )
 
-        self._hide_mode = _get_hide_mode()
-        self._original_visibility = {}
-        for area in context.screen.areas:
-            if area.type != "VIEW_3D":
-                continue
-            for space in area.spaces:
-                if space.type != "VIEW_3D":
-                    continue
-                if self._hide_mode == "OVERLAYS":
-                    if space.overlay.show_overlays:
-                        self._original_visibility[space] = True
-                        space.overlay.show_overlays = False
-                else:
-                    if space.overlay.show_bones:
-                        self._original_visibility[space] = True
-                        space.overlay.show_bones = False
+        if should_hide:
+            self._hide(context)
 
         bpy.ops.screen.animation_play()
+
+        if not should_hide:
+            return {"FINISHED"}
+
         wm = context.window_manager
         self._timer = wm.event_timer_add(0.1, window=context.window)
         wm.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
+    def _hide(self, context):
+        self._hide_mode = _get_hide_mode()
+        self._space = None
+        space = context.space_data
+        if not space or space.type != "VIEW_3D":
+            return
+        attr = "show_overlays" if self._hide_mode == "OVERLAYS" else "show_bones"
+        if getattr(space.overlay, attr):
+            setattr(space.overlay, attr, False)
+            self._space = space
+
     def _restore(self, context):
-        attr = "show_overlays" if getattr(self, '_hide_mode', 'BONES') == "OVERLAYS" else "show_bones"
-        for space, was_visible in self._original_visibility.items():
+        space = getattr(self, "_space", None)
+        if space:
+            attr = "show_overlays" if self._hide_mode == "OVERLAYS" else "show_bones"
             try:
-                setattr(space.overlay, attr, was_visible)
+                setattr(space.overlay, attr, True)
             except ReferenceError:
                 pass
-        self._original_visibility = {}
-        if self._timer:
-            context.window_manager.event_timer_remove(self._timer)
+            self._space = None
+        timer = getattr(self, "_timer", None)
+        if timer:
+            context.window_manager.event_timer_remove(timer)
             self._timer = None
 
     def cancel(self, context):
         self._restore(context)
-        return {"CANCELLED"}
 
 
 class AUTOHIDE_OT_on_transform(Operator):
@@ -123,7 +124,6 @@ class AUTOHIDE_OT_on_transform(Operator):
     bl_options = {"REGISTER"}
 
     mode: StringProperty(default="TRANSLATE")
-    _original_visibility = {}
 
     def modal(self, context, event):
         if event.type in {"LEFTMOUSE", "RET", "NUMPAD_ENTER", "RIGHTMOUSE", "ESC"} and event.value == "RELEASE":
@@ -133,46 +133,49 @@ class AUTOHIDE_OT_on_transform(Operator):
 
     def invoke(self, context, _event):
         if not getattr(context.scene, "autohide_on_transform", False):
-            return self._run_transform(context)
+            return self._run_transform()
 
         self._hide_mode = _get_hide_mode()
-        self._original_visibility = {}
-        if context.area and context.area.type == "VIEW_3D":
-            space = context.space_data
-            if space and space.type == "VIEW_3D":
-                if self._hide_mode == "OVERLAYS":
-                    if space.overlay.show_overlays:
-                        self._original_visibility[space] = True
-                        space.overlay.show_overlays = False
-                else:
-                    if space.overlay.show_bones:
-                        self._original_visibility[space] = True
-                        space.overlay.show_bones = False
+        self._space = None
+        space = context.space_data
+        if space and space.type == "VIEW_3D":
+            attr = "show_overlays" if self._hide_mode == "OVERLAYS" else "show_bones"
+            if getattr(space.overlay, attr):
+                setattr(space.overlay, attr, False)
+                self._space = space
 
-        self._run_transform(context)
+        result = self._run_transform()
+        if result == {"CANCELLED"}:
+            self._restore()
+            return {"CANCELLED"}
+
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
-    def _run_transform(self, _context):
+    def _run_transform(self):
+        _OPS = {
+            "TRANSLATE": bpy.ops.transform.translate,
+            "ROTATE": bpy.ops.transform.rotate,
+            "RESIZE": bpy.ops.transform.resize,
+        }
+        op = _OPS.get(self.mode)
+        if not op:
+            return {"CANCELLED"}
         try:
-            if self.mode == "TRANSLATE":
-                bpy.ops.transform.translate("INVOKE_DEFAULT")
-            elif self.mode == "ROTATE":
-                bpy.ops.transform.rotate("INVOKE_DEFAULT")
-            elif self.mode == "RESIZE":
-                bpy.ops.transform.resize("INVOKE_DEFAULT")
+            op("INVOKE_DEFAULT")
         except RuntimeError:
             return {"CANCELLED"}
         return {"FINISHED"}
 
     def _restore(self):
-        attr = "show_overlays" if getattr(self, '_hide_mode', 'BONES') == "OVERLAYS" else "show_bones"
-        for space, was_visible in self._original_visibility.items():
+        space = getattr(self, "_space", None)
+        if space:
+            attr = "show_overlays" if self._hide_mode == "OVERLAYS" else "show_bones"
             try:
-                setattr(space.overlay, attr, was_visible)
+                setattr(space.overlay, attr, True)
             except ReferenceError:
                 pass
-
+            self._space = None
 
 
 class AUTOHIDE_OT_toggle(Operator):
