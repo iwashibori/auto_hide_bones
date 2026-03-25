@@ -37,15 +37,57 @@ def _get_icon():
     return {"icon": "BONE_DATA"}
 
 
-def _get_hide_mode():
-    prefs = None
+def _get_prefs():
     for key in (__name__, __package__ or ""):
-        prefs = bpy.context.preferences.addons.get(key)
-        if prefs:
-            break
-    if prefs:
-        return prefs.preferences.hide_mode
-    return "BONES"
+        entry = bpy.context.preferences.addons.get(key)
+        if entry:
+            return entry.preferences
+    return None
+
+
+def _get_hide_mode():
+    prefs = _get_prefs()
+    return prefs.hide_mode if prefs else "BONES"
+
+
+# ----------------------------------------------------------------
+#  Hide / Restore helpers
+# ----------------------------------------------------------------
+
+def _overlay_attr(hide_mode):
+    return "show_overlays" if hide_mode == "OVERLAYS" else "show_bones"
+
+
+def _hide_overlays(context, hide_mode, *, all_viewports=False):
+    """Hide bones/overlays and return set of spaces that were visible."""
+    attr = _overlay_attr(hide_mode)
+    hidden = set()
+
+    if all_viewports:
+        for area in context.screen.areas:
+            if area.type != "VIEW_3D":
+                continue
+            space = area.spaces.active
+            if getattr(space.overlay, attr, False):
+                hidden.add(space)
+                setattr(space.overlay, attr, False)
+    else:
+        space = context.space_data
+        if space and getattr(space.overlay, attr, False):
+            hidden.add(space)
+            setattr(space.overlay, attr, False)
+
+    return hidden
+
+
+def _restore_overlays(hidden_spaces, hide_mode):
+    """Restore previously hidden overlays."""
+    attr = _overlay_attr(hide_mode)
+    for space in hidden_spaces:
+        try:
+            setattr(space.overlay, attr, True)
+        except ReferenceError:
+            pass
 
 
 # ----------------------------------------------------------------
@@ -58,9 +100,6 @@ class AUTOHIDE_OT_on_play(Operator):
     bl_description = "Hide armature and play animation. Restore visibility when stopped"
     bl_options = {"REGISTER"}
 
-    _timer = None
-    _original_visibility = {}
-
     def modal(self, context, event):
         if event.type == "TIMER" and not context.screen.is_animation_playing:
             self._restore(context)
@@ -68,45 +107,37 @@ class AUTOHIDE_OT_on_play(Operator):
         return {"PASS_THROUGH"}
 
     def invoke(self, context, _event):
+        # 再生中なら停止して終了
         if context.screen.is_animation_playing:
             bpy.ops.screen.animation_play()
             return {"FINISHED"}
 
-        if not getattr(context.scene, "autohide_on_play", False) or context.mode != "POSE":
-            bpy.ops.screen.animation_play()
-            return {"FINISHED"}
+        # 自動非表示が有効かつポーズモードなら非表示にする
+        should_hide = (
+            getattr(context.scene, "autohide_on_play", False)
+            and context.mode == "POSE"
+        )
+        if should_hide:
+            self._hide_mode = _get_hide_mode()
+            self._original_visibility = _hide_overlays(
+                context, self._hide_mode, all_viewports=True
+            )
 
-        self._hide_mode = _get_hide_mode()
-        self._original_visibility = {}
-        for area in context.screen.areas:
-            if area.type != "VIEW_3D":
-                continue
-            for space in area.spaces:
-                if space.type != "VIEW_3D":
-                    continue
-                if self._hide_mode == "OVERLAYS":
-                    if space.overlay.show_overlays:
-                        self._original_visibility[space] = True
-                        space.overlay.show_overlays = False
-                else:
-                    if space.overlay.show_bones:
-                        self._original_visibility[space] = True
-                        space.overlay.show_bones = False
-
+        # 再生開始（常に1回だけ呼ぶ）
         bpy.ops.screen.animation_play()
-        wm = context.window_manager
-        self._timer = wm.event_timer_add(0.1, window=context.window)
-        wm.modal_handler_add(self)
-        return {"RUNNING_MODAL"}
+
+        # 非表示にしたスペースがあればモーダル監視を開始
+        if should_hide and self._original_visibility:
+            wm = context.window_manager
+            self._timer = wm.event_timer_add(0.1, window=context.window)
+            wm.modal_handler_add(self)
+            return {"RUNNING_MODAL"}
+
+        return {"FINISHED"}
 
     def _restore(self, context):
-        attr = "show_overlays" if getattr(self, '_hide_mode', 'BONES') == "OVERLAYS" else "show_bones"
-        for space, was_visible in self._original_visibility.items():
-            try:
-                setattr(space.overlay, attr, was_visible)
-            except ReferenceError:
-                pass
-        self._original_visibility = {}
+        _restore_overlays(self._original_visibility, self._hide_mode)
+        self._original_visibility = set()
         if self._timer:
             context.window_manager.event_timer_remove(self._timer)
             self._timer = None
@@ -123,56 +154,39 @@ class AUTOHIDE_OT_on_transform(Operator):
     bl_options = {"REGISTER"}
 
     mode: StringProperty(default="TRANSLATE")
-    _original_visibility = {}
 
     def modal(self, context, event):
         if event.type in {"LEFTMOUSE", "RET", "NUMPAD_ENTER", "RIGHTMOUSE", "ESC"} and event.value == "RELEASE":
-            self._restore()
+            _restore_overlays(self._original_visibility, self._hide_mode)
             return {"FINISHED", "PASS_THROUGH"}
         return {"PASS_THROUGH"}
 
     def invoke(self, context, _event):
         if not getattr(context.scene, "autohide_on_transform", False):
-            return self._run_transform(context)
+            return self._run_transform()
 
         self._hide_mode = _get_hide_mode()
-        self._original_visibility = {}
-        if context.area and context.area.type == "VIEW_3D":
-            space = context.space_data
-            if space and space.type == "VIEW_3D":
-                if self._hide_mode == "OVERLAYS":
-                    if space.overlay.show_overlays:
-                        self._original_visibility[space] = True
-                        space.overlay.show_overlays = False
-                else:
-                    if space.overlay.show_bones:
-                        self._original_visibility[space] = True
-                        space.overlay.show_bones = False
+        self._original_visibility = _hide_overlays(context, self._hide_mode)
 
-        self._run_transform(context)
+        self._run_transform()
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
-    def _run_transform(self, _context):
+    _TRANSFORM_OPS = {
+        "TRANSLATE": bpy.ops.transform.translate,
+        "ROTATE": bpy.ops.transform.rotate,
+        "RESIZE": bpy.ops.transform.resize,
+    }
+
+    def _run_transform(self):
+        op = self._TRANSFORM_OPS.get(self.mode)
+        if not op:
+            return {"CANCELLED"}
         try:
-            if self.mode == "TRANSLATE":
-                bpy.ops.transform.translate("INVOKE_DEFAULT")
-            elif self.mode == "ROTATE":
-                bpy.ops.transform.rotate("INVOKE_DEFAULT")
-            elif self.mode == "RESIZE":
-                bpy.ops.transform.resize("INVOKE_DEFAULT")
+            op("INVOKE_DEFAULT")
         except RuntimeError:
             return {"CANCELLED"}
         return {"FINISHED"}
-
-    def _restore(self):
-        attr = "show_overlays" if getattr(self, '_hide_mode', 'BONES') == "OVERLAYS" else "show_bones"
-        for space, was_visible in self._original_visibility.items():
-            try:
-                setattr(space.overlay, attr, was_visible)
-            except ReferenceError:
-                pass
-
 
 
 class AUTOHIDE_OT_toggle(Operator):
@@ -320,7 +334,6 @@ class AutoHideBonesPreferences(bpy.types.AddonPreferences):
         row.prop(self, alt_prop, text="Alt", toggle=True)
 
 
-
 # ----------------------------------------------------------------
 #  UI
 # ----------------------------------------------------------------
@@ -348,13 +361,8 @@ def _register_keymaps():
         return
 
     # Preferences から保存済みキー設定を取得
-    prefs = None
-    for key in (__name__, __package__ or ""):
-        prefs = bpy.context.preferences.addons.get(key)
-        if prefs:
-            break
-    if prefs:
-        p = prefs.preferences
+    p = _get_prefs()
+    if p:
         play_key = p.play_key or "SPACE"
         play_ctrl, play_shift, play_alt = p.play_ctrl, p.play_shift, p.play_alt
         toggle_key = p.toggle_key or "C"
