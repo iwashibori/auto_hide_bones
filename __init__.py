@@ -47,7 +47,7 @@ _KEYMAP_NAMES = ("Pose", "Animation")
 
 
 def _is_supported_key_event(identifier):
-    if identifier == "NONE" or identifier in _MOUSE_EVENTS:
+    if identifier in _MOUSE_EVENTS:
         return True
     if identifier in _UNSUPPORTED_KEY_EVENTS:
         return False
@@ -157,7 +157,7 @@ class AUTOHIDE_OT_on_play(Operator):
 
         # 自動非表示が有効かつポーズモードなら非表示にする
         should_hide = (
-            getattr(context.scene, "autohide_on_play", False)
+            getattr(context.scene, "autohide_enabled", False)
             and context.mode == "POSE"
         )
         if should_hide:
@@ -208,7 +208,7 @@ class AUTOHIDE_OT_on_transform(Operator):
         _restore_overlays(self._original_visibility, self._hide_mode)
 
     def invoke(self, context, _event):
-        if not getattr(context.scene, "autohide_on_transform", False):
+        if not getattr(context.scene, "autohide_enabled", False):
             return self._run_transform()
 
         self._hide_mode = _get_hide_mode()
@@ -245,10 +245,7 @@ class AUTOHIDE_OT_toggle(Operator):
     bl_description = "Toggle Auto Hide on/off"
 
     def execute(self, context):
-        scene = context.scene
-        new_state = not (scene.autohide_on_play or scene.autohide_on_transform)
-        scene.autohide_on_play = new_state
-        scene.autohide_on_transform = new_state
+        context.scene.autohide_enabled = not context.scene.autohide_enabled
         for area in context.screen.areas:
             area.tag_redraw()
         return {"FINISHED"}
@@ -276,13 +273,17 @@ def _set_kmi_key(kmi, key, ctrl, shift, alt):
 
 
 def _sync_play_kmi(km_name, key, ctrl, shift, alt):
-    wm = bpy.context.window_manager
-    _sync_keyconfig_item(
-        wm.keyconfigs.addon, km_name, "autohide.on_play", key, ctrl, shift, alt, track_addon=True
-    )
-    _sync_keyconfig_item(
-        wm.keyconfigs.user, km_name, "autohide.on_play", key, ctrl, shift, alt
-    )
+    # addon keyconfig を更新
+    for km_add, kmi in _addon_keymaps:
+        if km_add.name == km_name and kmi.idname == "autohide.on_play":
+            _set_kmi_key(kmi, key, ctrl, shift, alt)
+    # user keyconfig も更新
+    kc_user = bpy.context.window_manager.keyconfigs.user
+    km = next((k for k in kc_user.keymaps if k.name == km_name), None)
+    if km:
+        for kmi in km.keymap_items:
+            if kmi.idname == "autohide.on_play":
+                _set_kmi_key(kmi, key, ctrl, shift, alt)
 
 
 def _update_toggle_keymap(self, _context):
@@ -290,60 +291,20 @@ def _update_toggle_keymap(self, _context):
                      self.toggle_ctrl, self.toggle_shift, self.toggle_alt)
 
 
-def _remove_tracked_kmi(target_kmi):
-    _addon_keymaps[:] = [
-        (km, kmi) for km, kmi in _addon_keymaps
-        if kmi != target_kmi
-    ]
-
-
-def _sync_keyconfig_item(kc, km_name, idname, key, ctrl, shift, alt, *, track_addon=False):
-    if not kc:
-        return
-
-    km = next((k for k in kc.keymaps if k.name == km_name), None)
-    if not km:
-        if key == "NONE":
-            return
-        km = kc.keymaps.new(name=km_name, space_type="EMPTY")
-
-    matches = [kmi for kmi in km.keymap_items if kmi.idname == idname]
-    primary = matches[0] if matches else None
-
-    for extra in matches[1:]:
-        km.keymap_items.remove(extra)
-        if track_addon:
-            _remove_tracked_kmi(extra)
-
-    if key == "NONE":
-        if primary:
-            km.keymap_items.remove(primary)
-            if track_addon:
-                _remove_tracked_kmi(primary)
-        return
-
-    if primary:
-        _set_kmi_key(primary, key, ctrl, shift, alt)
-        return
-
-    kmi = km.keymap_items.new(idname, key, "PRESS",
-                              ctrl=ctrl, shift=shift, alt=alt)
-    if track_addon:
-        _addon_keymaps.append((km, kmi))
-
-
 def _sync_toggle_kmi(idname, key, ctrl, shift, alt):
-    """toggle 用 kmi を addon / user keyconfig で同期する"""
-    wm = bpy.context.window_manager
-    kc_addon = wm.keyconfigs.addon
-    kc_user = wm.keyconfigs.user
+    """toggle 用 kmi を addon / user keyconfig で同期（play と同方式）"""
+    # addon keyconfig を更新
+    for km_add, kmi in _addon_keymaps:
+        if kmi.idname == idname:
+            _set_kmi_key(kmi, key, ctrl, shift, alt)
+    # user keyconfig も更新
+    kc_user = bpy.context.window_manager.keyconfigs.user
     for km_name in _KEYMAP_NAMES:
-        _sync_keyconfig_item(
-            kc_addon, km_name, idname, key, ctrl, shift, alt, track_addon=True
-        )
-        _sync_keyconfig_item(
-            kc_user, km_name, idname, key, ctrl, shift, alt
-        )
+        km = next((k for k in kc_user.keymaps if k.name == km_name), None)
+        if km:
+            for kmi in km.keymap_items:
+                if kmi.idname == idname:
+                    _set_kmi_key(kmi, key, ctrl, shift, alt)
 
 
 class AutoHideBonesPreferences(bpy.types.AddonPreferences):
@@ -417,7 +378,7 @@ def _draw_viewport_header(self, context):
     layout = self.layout
     layout.separator()
     layout.operator("autohide.toggle", text="",
-                    depress=context.scene.autohide_on_play or context.scene.autohide_on_transform,
+                    depress=context.scene.autohide_enabled,
                     **_get_icon())
 
 
@@ -453,20 +414,18 @@ def _register_keymaps():
         kmi = km.keymap_items.new("autohide.on_transform", key, "PRESS")
         kmi.properties.mode = mode
         _addon_keymaps.append((km, kmi))
-    if toggle_key != "NONE":
-        kmi = km.keymap_items.new("autohide.toggle", toggle_key, "PRESS",
-                                   ctrl=toggle_ctrl, shift=toggle_shift, alt=toggle_alt)
-        _addon_keymaps.append((km, kmi))
+    kmi = km.keymap_items.new("autohide.toggle", toggle_key, "PRESS",
+                               ctrl=toggle_ctrl, shift=toggle_shift, alt=toggle_alt)
+    _addon_keymaps.append((km, kmi))
 
     # Animation (Timeline / Dopesheet / Graph Editor etc.)
     km_anim = kc.keymaps.new(name="Animation", space_type="EMPTY")
     kmi = km_anim.keymap_items.new("autohide.on_play", play_key, "PRESS",
                                     ctrl=play_ctrl, shift=play_shift, alt=play_alt)
     _addon_keymaps.append((km_anim, kmi))
-    if toggle_key != "NONE":
-        kmi = km_anim.keymap_items.new("autohide.toggle", toggle_key, "PRESS",
-                                        ctrl=toggle_ctrl, shift=toggle_shift, alt=toggle_alt)
-        _addon_keymaps.append((km_anim, kmi))
+    kmi = km_anim.keymap_items.new("autohide.toggle", toggle_key, "PRESS",
+                                    ctrl=toggle_ctrl, shift=toggle_shift, alt=toggle_alt)
+    _addon_keymaps.append((km_anim, kmi))
 
 
 # ----------------------------------------------------------------
@@ -490,14 +449,9 @@ def register():
     pcoll.load("AUTOHIDE", os.path.join(icon_dir, "AUTOHIDE.png"), "IMAGE")
     _preview_collections["main"] = pcoll
 
-    bpy.types.Scene.autohide_on_play = BoolProperty(
-        name="Auto Hide on Play",
-        description="Auto hide bones during animation playback",
-        default=False,
-    )
-    bpy.types.Scene.autohide_on_transform = BoolProperty(
-        name="Auto Hide on Transform",
-        description="Auto hide bones during transform (G/R/S)",
+    bpy.types.Scene.autohide_enabled = BoolProperty(
+        name="Auto Hide Bones",
+        description="Auto hide bones during playback and transform",
         default=False,
     )
     bpy.types.VIEW3D_MT_editor_menus.append(_draw_viewport_header)
@@ -510,23 +464,10 @@ def unregister():
         km.keymap_items.remove(kmi)
     _addon_keymaps.clear()
 
-    # user keyconfig に追加したトグル kmi を削除
-    kc_user = bpy.context.window_manager.keyconfigs.user
-    for km_name in ("Pose", "Animation"):
-        km = next((k for k in kc_user.keymaps if k.name == km_name), None)
-        if not km:
-            continue
-        remove = [kmi for kmi in km.keymap_items
-                  if kmi.idname == "autohide.toggle"]
-        for kmi in remove:
-            km.keymap_items.remove(kmi)
-
     bpy.types.VIEW3D_MT_editor_menus.remove(_draw_viewport_header)
 
-    if hasattr(bpy.types.Scene, "autohide_on_play"):
-        del bpy.types.Scene.autohide_on_play
-    if hasattr(bpy.types.Scene, "autohide_on_transform"):
-        del bpy.types.Scene.autohide_on_transform
+    if hasattr(bpy.types.Scene, "autohide_enabled"):
+        del bpy.types.Scene.autohide_enabled
 
     for pcoll in _preview_collections.values():
         bpy.utils.previews.remove(pcoll)
