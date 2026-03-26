@@ -23,10 +23,42 @@ from bpy.props import BoolProperty, EnumProperty, StringProperty
 # カスタムアイコン
 _preview_collections = {}
 
-# EnumProperty 用キーアイテムリスト（静的に一度だけ生成）
+_MOUSE_EVENTS = {
+    'LEFTMOUSE', 'MIDDLEMOUSE', 'RIGHTMOUSE',
+    'BUTTON4MOUSE', 'BUTTON5MOUSE', 'BUTTON6MOUSE', 'BUTTON7MOUSE',
+    'PEN', 'ERASER', 'MOUSEMOVE', 'TRACKPADPAN', 'TRACKPADZOOM',
+    'MOUSEROTATE', 'MOUSESMARTZOOM',
+    'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'WHEELINMOUSE', 'WHEELOUTMOUSE',
+    'WHEELLEFTMOUSE', 'WHEELRIGHTMOUSE',
+}
+
+_UNSUPPORTED_KEY_EVENTS = {
+    'ACTIONMOUSE', 'SELECTMOUSE', 'INBETWEEN_MOUSEMOVE',
+    'TEXTINPUT', 'WINDOW_DEACTIVATE',
+}
+
+_UNSUPPORTED_KEY_PREFIXES = (
+    'EVT_TWEAK_',
+    'NDOF_',
+    'TIMER',
+)
+
+_KEYMAP_NAMES = ("Pose", "Animation")
+
+
+def _is_supported_key_event(identifier):
+    if identifier == "NONE" or identifier in _MOUSE_EVENTS:
+        return True
+    if identifier in _UNSUPPORTED_KEY_EVENTS:
+        return False
+    return not identifier.startswith(_UNSUPPORTED_KEY_PREFIXES)
+
+
+# EnumProperty 用キーアイテムリスト（キーボード / マウスのみ）
 _KEY_ITEMS = [
     (item.identifier, item.name, "", item.value)
     for item in bpy.types.KeyMapItem.bl_rna.properties["type"].enum_items
+    if _is_supported_key_event(item.identifier)
 ]
 
 
@@ -58,6 +90,15 @@ def _overlay_attr(hide_mode):
     return "show_overlays" if hide_mode == "OVERLAYS" else "show_bones"
 
 
+def _get_view3d_space(context):
+    space = getattr(context, "space_data", None)
+    if not space or getattr(space, "type", None) != "VIEW_3D":
+        return None
+    if not hasattr(space, "overlay"):
+        return None
+    return space
+
+
 def _hide_overlays(context, hide_mode, *, all_viewports=False):
     """Hide bones/overlays and return set of spaces that were visible."""
     attr = _overlay_attr(hide_mode)
@@ -68,11 +109,13 @@ def _hide_overlays(context, hide_mode, *, all_viewports=False):
             if area.type != "VIEW_3D":
                 continue
             space = area.spaces.active
+            if getattr(space, "type", None) != "VIEW_3D" or not hasattr(space, "overlay"):
+                continue
             if getattr(space.overlay, attr, False):
                 hidden.add(space)
                 setattr(space.overlay, attr, False)
     else:
-        space = context.space_data
+        space = _get_view3d_space(context)
         if space and getattr(space.overlay, attr, False):
             hidden.add(space)
             setattr(space.overlay, attr, False)
@@ -161,6 +204,9 @@ class AUTOHIDE_OT_on_transform(Operator):
             return {"FINISHED", "PASS_THROUGH"}
         return {"PASS_THROUGH"}
 
+    def cancel(self, _context):
+        _restore_overlays(self._original_visibility, self._hide_mode)
+
     def invoke(self, context, _event):
         if not getattr(context.scene, "autohide_on_transform", False):
             return self._run_transform()
@@ -168,7 +214,12 @@ class AUTOHIDE_OT_on_transform(Operator):
         self._hide_mode = _get_hide_mode()
         self._original_visibility = _hide_overlays(context, self._hide_mode)
 
-        self._run_transform()
+        result = self._run_transform()
+        if "CANCELLED" in result:
+            _restore_overlays(self._original_visibility, self._hide_mode)
+            self._original_visibility = set()
+            return result
+
         context.window_manager.modal_handler_add(self)
         return {"RUNNING_MODAL"}
 
@@ -183,10 +234,9 @@ class AUTOHIDE_OT_on_transform(Operator):
         if not op:
             return {"CANCELLED"}
         try:
-            op("INVOKE_DEFAULT")
+            return op("INVOKE_DEFAULT")
         except RuntimeError:
             return {"CANCELLED"}
-        return {"FINISHED"}
 
 
 class AUTOHIDE_OT_toggle(Operator):
@@ -209,18 +259,8 @@ class AUTOHIDE_OT_toggle(Operator):
 # ----------------------------------------------------------------
 
 def _update_play_keymap(self, _context):
-    for km_name in ("Pose", "Animation"):
+    for km_name in _KEYMAP_NAMES:
         _sync_play_kmi(km_name, self.play_key, self.play_ctrl, self.play_shift, self.play_alt)
-
-
-_MOUSE_EVENTS = {
-    'LEFTMOUSE', 'MIDDLEMOUSE', 'RIGHTMOUSE',
-    'BUTTON4MOUSE', 'BUTTON5MOUSE', 'BUTTON6MOUSE', 'BUTTON7MOUSE',
-    'PEN', 'ERASER', 'MOUSEMOVE', 'TRACKPADPAN', 'TRACKPADZOOM',
-    'MOUSEROTATE', 'MOUSESMARTZOOM',
-    'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'WHEELINMOUSE', 'WHEELOUTMOUSE',
-    'WHEELLEFTMOUSE', 'WHEELRIGHTMOUSE',
-}
 
 
 def _set_kmi_key(kmi, key, ctrl, shift, alt):
@@ -236,17 +276,13 @@ def _set_kmi_key(kmi, key, ctrl, shift, alt):
 
 
 def _sync_play_kmi(km_name, key, ctrl, shift, alt):
-    # addon keyconfig を更新
-    for km_add, kmi in _addon_keymaps:
-        if km_add.name == km_name and kmi.idname == "autohide.on_play":
-            _set_kmi_key(kmi, key, ctrl, shift, alt)
-    # user keyconfig も更新
-    kc_user = bpy.context.window_manager.keyconfigs.user
-    km = next((k for k in kc_user.keymaps if k.name == km_name), None)
-    if km:
-        for kmi in km.keymap_items:
-            if kmi.idname == "autohide.on_play":
-                _set_kmi_key(kmi, key, ctrl, shift, alt)
+    wm = bpy.context.window_manager
+    _sync_keyconfig_item(
+        wm.keyconfigs.addon, km_name, "autohide.on_play", key, ctrl, shift, alt, track_addon=True
+    )
+    _sync_keyconfig_item(
+        wm.keyconfigs.user, km_name, "autohide.on_play", key, ctrl, shift, alt
+    )
 
 
 def _update_toggle_keymap(self, _context):
@@ -254,23 +290,60 @@ def _update_toggle_keymap(self, _context):
                      self.toggle_ctrl, self.toggle_shift, self.toggle_alt)
 
 
-def _sync_toggle_kmi(idname, key, ctrl, shift, alt):
-    """toggle 用 kmi を user keyconfig で同期（なければ作成、NONE なら削除）"""
-    kc_user = bpy.context.window_manager.keyconfigs.user
-    for km_name in ("Pose", "Animation"):
-        km = next((k for k in kc_user.keymaps if k.name == km_name), None)
-        if not km:
-            continue
-        existing = next((kmi for kmi in km.keymap_items if kmi.idname == idname), None)
+def _remove_tracked_kmi(target_kmi):
+    _addon_keymaps[:] = [
+        (km, kmi) for km, kmi in _addon_keymaps
+        if kmi != target_kmi
+    ]
+
+
+def _sync_keyconfig_item(kc, km_name, idname, key, ctrl, shift, alt, *, track_addon=False):
+    if not kc:
+        return
+
+    km = next((k for k in kc.keymaps if k.name == km_name), None)
+    if not km:
         if key == "NONE":
-            if existing:
-                km.keymap_items.remove(existing)
-        else:
-            if existing:
-                _set_kmi_key(existing, key, ctrl, shift, alt)
-            else:
-                kmi = km.keymap_items.new(idname, key, "PRESS",
-                                          ctrl=ctrl, shift=shift, alt=alt)
+            return
+        km = kc.keymaps.new(name=km_name, space_type="EMPTY")
+
+    matches = [kmi for kmi in km.keymap_items if kmi.idname == idname]
+    primary = matches[0] if matches else None
+
+    for extra in matches[1:]:
+        km.keymap_items.remove(extra)
+        if track_addon:
+            _remove_tracked_kmi(extra)
+
+    if key == "NONE":
+        if primary:
+            km.keymap_items.remove(primary)
+            if track_addon:
+                _remove_tracked_kmi(primary)
+        return
+
+    if primary:
+        _set_kmi_key(primary, key, ctrl, shift, alt)
+        return
+
+    kmi = km.keymap_items.new(idname, key, "PRESS",
+                              ctrl=ctrl, shift=shift, alt=alt)
+    if track_addon:
+        _addon_keymaps.append((km, kmi))
+
+
+def _sync_toggle_kmi(idname, key, ctrl, shift, alt):
+    """toggle 用 kmi を addon / user keyconfig で同期する"""
+    wm = bpy.context.window_manager
+    kc_addon = wm.keyconfigs.addon
+    kc_user = wm.keyconfigs.user
+    for km_name in _KEYMAP_NAMES:
+        _sync_keyconfig_item(
+            kc_addon, km_name, idname, key, ctrl, shift, alt, track_addon=True
+        )
+        _sync_keyconfig_item(
+            kc_user, km_name, idname, key, ctrl, shift, alt
+        )
 
 
 class AutoHideBonesPreferences(bpy.types.AddonPreferences):
@@ -289,7 +362,7 @@ class AutoHideBonesPreferences(bpy.types.AddonPreferences):
     play_key: EnumProperty(
         name="Key",
         items=_KEY_ITEMS,
-        default=221,  # SPACE
+        default="SPACE",
         update=_update_play_keymap,
     )
     play_ctrl: BoolProperty(name="Ctrl", update=_update_play_keymap)
