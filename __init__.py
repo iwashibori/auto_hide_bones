@@ -23,45 +23,6 @@ from bpy.props import BoolProperty, EnumProperty, StringProperty
 # カスタムアイコン
 _preview_collections = {}
 
-_MOUSE_EVENTS = {
-    'LEFTMOUSE', 'MIDDLEMOUSE', 'RIGHTMOUSE',
-    'BUTTON4MOUSE', 'BUTTON5MOUSE', 'BUTTON6MOUSE', 'BUTTON7MOUSE',
-    'PEN', 'ERASER', 'MOUSEMOVE', 'TRACKPADPAN', 'TRACKPADZOOM',
-    'MOUSEROTATE', 'MOUSESMARTZOOM',
-    'WHEELUPMOUSE', 'WHEELDOWNMOUSE', 'WHEELINMOUSE', 'WHEELOUTMOUSE',
-    'WHEELLEFTMOUSE', 'WHEELRIGHTMOUSE',
-}
-
-_UNSUPPORTED_KEY_EVENTS = {
-    'ACTIONMOUSE', 'SELECTMOUSE', 'INBETWEEN_MOUSEMOVE',
-    'TEXTINPUT', 'WINDOW_DEACTIVATE',
-}
-
-_UNSUPPORTED_KEY_PREFIXES = (
-    'EVT_TWEAK_',
-    'NDOF_',
-    'TIMER',
-)
-
-_KEYMAP_NAMES = ("Pose", "Animation")
-
-
-def _is_supported_key_event(identifier):
-    if identifier in _MOUSE_EVENTS:
-        return True
-    if identifier in _UNSUPPORTED_KEY_EVENTS:
-        return False
-    return not identifier.startswith(_UNSUPPORTED_KEY_PREFIXES)
-
-
-# EnumProperty 用キーアイテムリスト（キーボード / マウスのみ）
-_KEY_ITEMS = [
-    (item.identifier, item.name, "", item.value)
-    for item in bpy.types.KeyMapItem.bl_rna.properties["type"].enum_items
-    if _is_supported_key_event(item.identifier)
-]
-
-
 def _get_icon():
     pcoll = _preview_collections.get("main")
     if pcoll and "AUTOHIDE" in pcoll:
@@ -196,7 +157,7 @@ class AUTOHIDE_OT_on_transform(Operator):
     bl_description = "Hide armature during transform operation"
     bl_options = {"REGISTER"}
 
-    mode: StringProperty(default="TRANSLATE")
+    mode: StringProperty(default="MOVE")
 
     def modal(self, context, event):
         if event.type in {"LEFTMOUSE", "RET", "NUMPAD_ENTER", "RIGHTMOUSE", "ESC"} and event.value == "RELEASE":
@@ -224,9 +185,9 @@ class AUTOHIDE_OT_on_transform(Operator):
         return {"RUNNING_MODAL"}
 
     _TRANSFORM_OPS = {
-        "TRANSLATE": bpy.ops.transform.translate,
+        "MOVE": bpy.ops.transform.translate,
         "ROTATE": bpy.ops.transform.rotate,
-        "RESIZE": bpy.ops.transform.resize,
+        "SCALE": bpy.ops.transform.resize,
     }
 
     def _run_transform(self):
@@ -255,58 +216,6 @@ class AUTOHIDE_OT_toggle(Operator):
 #  Addon Preferences
 # ----------------------------------------------------------------
 
-def _update_play_keymap(self, _context):
-    for km_name in _KEYMAP_NAMES:
-        _sync_play_kmi(km_name, self.play_key, self.play_ctrl, self.play_shift, self.play_alt)
-
-
-def _set_kmi_key(kmi, key, ctrl, shift, alt):
-    """map_type を適切に設定してからキーを変更"""
-    if key in _MOUSE_EVENTS:
-        kmi.map_type = 'MOUSE'
-    else:
-        kmi.map_type = 'KEYBOARD'
-    kmi.type = key
-    kmi.ctrl = ctrl
-    kmi.shift = shift
-    kmi.alt = alt
-
-
-def _sync_play_kmi(km_name, key, ctrl, shift, alt):
-    # addon keyconfig を更新
-    for km_add, kmi in _addon_keymaps:
-        if km_add.name == km_name and kmi.idname == "autohide.on_play":
-            _set_kmi_key(kmi, key, ctrl, shift, alt)
-    # user keyconfig も更新
-    kc_user = bpy.context.window_manager.keyconfigs.user
-    km = next((k for k in kc_user.keymaps if k.name == km_name), None)
-    if km:
-        for kmi in km.keymap_items:
-            if kmi.idname == "autohide.on_play":
-                _set_kmi_key(kmi, key, ctrl, shift, alt)
-
-
-def _update_toggle_keymap(self, _context):
-    _sync_toggle_kmi("autohide.toggle", self.toggle_key,
-                     self.toggle_ctrl, self.toggle_shift, self.toggle_alt)
-
-
-def _sync_toggle_kmi(idname, key, ctrl, shift, alt):
-    """toggle 用 kmi を addon / user keyconfig で同期（play と同方式）"""
-    # addon keyconfig を更新
-    for km_add, kmi in _addon_keymaps:
-        if kmi.idname == idname:
-            _set_kmi_key(kmi, key, ctrl, shift, alt)
-    # user keyconfig も更新
-    kc_user = bpy.context.window_manager.keyconfigs.user
-    for km_name in _KEYMAP_NAMES:
-        km = next((k for k in kc_user.keymaps if k.name == km_name), None)
-        if km:
-            for kmi in km.keymap_items:
-                if kmi.idname == idname:
-                    _set_kmi_key(kmi, key, ctrl, shift, alt)
-
-
 class AutoHideBonesPreferences(bpy.types.AddonPreferences):
     bl_idname = __name__
 
@@ -316,56 +225,28 @@ class AutoHideBonesPreferences(bpy.types.AddonPreferences):
             ("BONES", "Bones Only", "Hide bones only"),
             ("OVERLAYS", "All Overlays", "Hide all overlays"),
         ],
-        default="OVERLAYS",
+        default="BONES",
     )
-
-    # Auto Hide on Play hotkey
-    play_key: EnumProperty(
-        name="Key",
-        items=_KEY_ITEMS,
-        default="SPACE",
-        update=_update_play_keymap,
-    )
-    play_ctrl: BoolProperty(name="Ctrl", update=_update_play_keymap)
-    play_shift: BoolProperty(name="Shift", update=_update_play_keymap)
-    play_alt: BoolProperty(name="Alt", update=_update_play_keymap)
-
-    # Toggle hotkey
-    toggle_key: EnumProperty(
-        name="Key",
-        items=_KEY_ITEMS,
-        default="C",
-        update=_update_toggle_keymap,
-    )
-    toggle_ctrl: BoolProperty(name="Ctrl", update=_update_toggle_keymap)
-    toggle_shift: BoolProperty(name="Shift", update=_update_toggle_keymap)
-    toggle_alt: BoolProperty(name="Alt", default=True, update=_update_toggle_keymap)
 
     def draw(self, _context):
         layout = self.layout
 
         box = layout.box()
-        box.label(text="Hide Mode", icon="OVERLAY")
-        box.row().prop(self, "hide_mode", expand=True)
+        box.label(text="Keymaps (Pose Mode)")
+        col = box.column(align=True)
+        col.label(text="-Space — Play / Stop")
+        col.label(text="-G/R/S — Hide during Move / Rotate / Scale")
+        col.label(text="-Alt+C — Toggle Auto Hide")
+        box.label(text="Keymaps (Animation)")
+        col = box.column(align=True)
+        col.label(text="-Space — Play / Stop")
+        col.label(text="-Alt+C — Toggle Auto Hide")
+        box.separator()
+        box.label(text='To change keymaps, search "Auto Hide" in Preferences > Keymap.')
 
         box = layout.box()
-        box.label(text="Keymaps", icon="KEYINGSET")
-
-        # Auto Hide on Play
-        self._draw_hotkey_row(box, "Auto Hide on Play", "play_key", "play_ctrl", "play_shift", "play_alt")
-        box.separator()
-        # Toggle Auto Hide
-        self._draw_hotkey_row(box, "Toggle Auto Hide", "toggle_key", "toggle_ctrl", "toggle_shift", "toggle_alt")
-
-    def _draw_hotkey_row(self, box, label, key_prop, ctrl_prop, shift_prop, alt_prop):
-        split = box.split(factor=0.4)
-        split.label(text=label)
-        col = split.column(align=True)
-        col.prop(self, key_prop, text="", event=True)
-        row = col.row(align=True)
-        row.prop(self, ctrl_prop, text="Ctrl", toggle=True)
-        row.prop(self, shift_prop, text="Shift", toggle=True)
-        row.prop(self, alt_prop, text="Alt", toggle=True)
+        box.label(text="Hide Mode", icon="OVERLAY")
+        box.row().prop(self, "hide_mode", expand=True)
 
 
 # ----------------------------------------------------------------
@@ -394,37 +275,22 @@ def _register_keymaps():
     if not kc:
         return
 
-    # Preferences から保存済みキー設定を取得
-    p = _get_prefs()
-    if p:
-        play_key = p.play_key or "SPACE"
-        play_ctrl, play_shift, play_alt = p.play_ctrl, p.play_shift, p.play_alt
-        toggle_key = p.toggle_key or "C"
-        toggle_ctrl, toggle_shift, toggle_alt = p.toggle_ctrl, p.toggle_shift, p.toggle_alt
-    else:
-        play_key, play_ctrl, play_shift, play_alt = "SPACE", False, False, False
-        toggle_key, toggle_ctrl, toggle_shift, toggle_alt = "C", False, False, True
-
     # Pose Mode
     km = kc.keymaps.new(name="Pose", space_type="EMPTY")
-    kmi = km.keymap_items.new("autohide.on_play", play_key, "PRESS",
-                               ctrl=play_ctrl, shift=play_shift, alt=play_alt)
+    kmi = km.keymap_items.new("autohide.on_play", "SPACE", "PRESS")
     _addon_keymaps.append((km, kmi))
-    for key, mode in (("G", "TRANSLATE"), ("R", "ROTATE"), ("S", "RESIZE")):
+    for key, mode in (("G", "MOVE"), ("R", "ROTATE"), ("S", "SCALE")):
         kmi = km.keymap_items.new("autohide.on_transform", key, "PRESS")
         kmi.properties.mode = mode
         _addon_keymaps.append((km, kmi))
-    kmi = km.keymap_items.new("autohide.toggle", toggle_key, "PRESS",
-                               ctrl=toggle_ctrl, shift=toggle_shift, alt=toggle_alt)
+    kmi = km.keymap_items.new("autohide.toggle", "C", "PRESS", alt=True)
     _addon_keymaps.append((km, kmi))
 
     # Animation (Timeline / Dopesheet / Graph Editor etc.)
     km_anim = kc.keymaps.new(name="Animation", space_type="EMPTY")
-    kmi = km_anim.keymap_items.new("autohide.on_play", play_key, "PRESS",
-                                    ctrl=play_ctrl, shift=play_shift, alt=play_alt)
+    kmi = km_anim.keymap_items.new("autohide.on_play", "SPACE", "PRESS")
     _addon_keymaps.append((km_anim, kmi))
-    kmi = km_anim.keymap_items.new("autohide.toggle", toggle_key, "PRESS",
-                                    ctrl=toggle_ctrl, shift=toggle_shift, alt=toggle_alt)
+    kmi = km_anim.keymap_items.new("autohide.toggle", "C", "PRESS", alt=True)
     _addon_keymaps.append((km_anim, kmi))
 
 
