@@ -3,7 +3,7 @@ schema_version = "1.0.0"
 id = "auto_hide_bones"
 version = "1.0.0"
 name = "Auto Hide Bones"
-tagline = "Auto hide armature during playback and G/R/S transform"
+tagline = "Auto hide armature during playback and G/R/S transform in Pose Mode"
 maintainer = "iwashi"
 
 type = "add-on"

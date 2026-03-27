@@ -160,7 +160,10 @@ class AUTOHIDE_OT_on_transform(Operator):
     mode: StringProperty(default="MOVE")
 
     def modal(self, context, event):
-        if event.type in {"LEFTMOUSE", "RET", "NUMPAD_ENTER", "RIGHTMOUSE", "ESC"} and event.value == "RELEASE":
+        if event.type in {"RIGHTMOUSE", "ESC"}:
+            _restore_overlays(self._original_visibility, self._hide_mode)
+            return {"FINISHED", "PASS_THROUGH"}
+        if event.type in {"LEFTMOUSE", "RET", "NUMPAD_ENTER"} and event.value == "RELEASE":
             _restore_overlays(self._original_visibility, self._hide_mode)
             return {"FINISHED", "PASS_THROUGH"}
         return {"PASS_THROUGH"}
