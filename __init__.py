@@ -219,6 +219,40 @@ class AUTOHIDE_OT_toggle(Operator):
 #  Addon Preferences
 # ----------------------------------------------------------------
 
+def _get_user_kmi(km_name, operator_idname):
+    """user keyconfig から指定オペレーターの kmi を取得"""
+    kc = bpy.context.window_manager.keyconfigs.user
+    km = kc.keymaps.get(km_name)
+    if not km:
+        return None
+    for kmi in km.keymap_items:
+        if kmi.idname == operator_idname:
+            return kmi
+    return None
+
+
+def _draw_kmi_row(layout, km_name, operator_idname, label):
+    """NodePie 風の kmi 行描画"""
+    kmi = _get_user_kmi(km_name, operator_idname)
+    if not kmi:
+        layout.label(text=f"{label} (not found)")
+        return
+
+    # ラベル行
+    row = layout.row(align=True)
+    row.scale_y = 0.8
+    row.label(text=label)
+
+    # kmi 行
+    row = layout.row(align=True)
+    row.active = kmi.active
+    sub = row.row(align=True)
+    sub.prop(kmi, "active", text="")
+    sub = row.row(align=True)
+    sub.scale_x = 0.5
+    sub.prop(kmi, "type", full_event=True, text="")
+
+
 class AutoHideBonesPreferences(bpy.types.AddonPreferences):
     bl_idname = __name__
 
@@ -234,22 +268,37 @@ class AutoHideBonesPreferences(bpy.types.AddonPreferences):
     def draw(self, _context):
         layout = self.layout
 
-        box = layout.box()
-        box.label(text="Keymaps (Pose Mode)")
-        col = box.column(align=True)
-        col.label(text="-Space — Play / Stop")
-        col.label(text="-G/R/S — Hide during Move / Rotate / Scale")
-        col.label(text="-Alt+C — Toggle Auto Hide")
-        box.label(text="Keymaps (Animation)")
-        col = box.column(align=True)
-        col.label(text="-Space — Play / Stop")
-        col.label(text="-Alt+C — Toggle Auto Hide")
-        box.separator()
-        box.label(text='To change keymaps, search "Auto Hide" in Preferences > Keymap.')
+        # --- Hide Mode セクション ---
+        main_col = layout.column(align=True)
+        header_box = main_col.box()
+        header_row = header_box.row(align=True)
+        header_row.scale_y = 0.85
+        sub = header_row.row(align=True)
+        sub.alignment = "CENTER"
+        sub.label(text="Hide Mode")
+        body_box = main_col.box()
+        body_box.row().prop(self, "hide_mode", expand=True)
 
-        box = layout.box()
-        box.label(text="Hide Mode", icon="OVERLAY")
-        box.row().prop(self, "hide_mode", expand=True)
+        # --- Keymap セクション ---
+        row = layout.row()
+
+        def _draw_km_column(parent, km_name, title):
+            main_col = parent.column(align=True)
+            header_box = main_col.box()
+            hr = header_box.row(align=True)
+            hr.scale_y = 0.85
+            sub = hr.row(align=True)
+            sub.alignment = "CENTER"
+            sub.label(text=title)
+            body_box = main_col.box()
+            col = body_box.column()
+            col.scale_y = 0.9
+            _draw_kmi_row(col, km_name, "autohide.on_play", "Play / Stop:")
+            col.separator()
+            _draw_kmi_row(col, km_name, "autohide.toggle", "Auto Hide ON/OFF:")
+
+        _draw_km_column(row, "Pose", "Keymap (Pose)")
+        _draw_km_column(row, "Animation", "Keymap (Animation)")
 
 
 # ----------------------------------------------------------------
