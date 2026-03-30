@@ -1,18 +1,4 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-#
-# Copyright (C) 2026 iwashi
-#
-# This file is part of Auto Hide Bones.
-#
-#  Auto Hide Bones is free software; you can redistribute it and/or
-#  modify it under the terms of the GNU General Public License
-#  as published by the Free Software Foundation; either version 3
-#  of the License, or (at your option) any later version.
-#
-#  This program is distributed in the hope that it will be useful,
-#  but WITHOUT ANY WARRANTY; without even the implied warranty of
-#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-#  GNU General Public License for more details.
 
 import os
 import bpy
@@ -116,10 +102,12 @@ class AUTOHIDE_OT_on_play(Operator):
             bpy.ops.screen.animation_play()
             return {"FINISHED"}
 
-        # 自動非表示が有効かつポーズモードなら非表示にする
+        # 自動非表示が有効かつポーズモードかつ Play が有効なら非表示にする
+        prefs = _get_prefs()
         should_hide = (
             getattr(context.scene, "autohide_enabled", False)
             and context.mode == "POSE"
+            and prefs and prefs.enable_on_play
         )
         if should_hide:
             self._hide_mode = _get_hide_mode()
@@ -172,7 +160,8 @@ class AUTOHIDE_OT_on_transform(Operator):
         _restore_overlays(self._original_visibility, self._hide_mode)
 
     def invoke(self, context, _event):
-        if not getattr(context.scene, "autohide_enabled", False):
+        prefs = _get_prefs()
+        if not getattr(context.scene, "autohide_enabled", False) or not (prefs and prefs.enable_on_transform):
             return self._run_transform()
 
         self._hide_mode = _get_hide_mode()
@@ -265,19 +254,46 @@ class AutoHideBonesPreferences(bpy.types.AddonPreferences):
         default="BONES",
     )
 
+    enable_on_play: BoolProperty(
+        name="Play",
+        description="Auto hide on animation playback",
+        default=True,
+    )
+    enable_on_transform: BoolProperty(
+        name="Transform",
+        description="Auto hide on G/R/S transform",
+        default=True,
+    )
+
     def draw(self, _context):
         layout = self.layout
 
-        # --- Hide Mode セクション ---
-        main_col = layout.column(align=True)
-        header_box = main_col.box()
+        # --- Hide Mode / Hide On セクション (2カラム) ---
+        split = layout.split(factor=0.5)
+
+        # 左カラム: Hide Mode
+        left_col = split.column(align=True)
+        header_box = left_col.box()
         header_row = header_box.row(align=True)
         header_row.scale_y = 0.85
         sub = header_row.row(align=True)
         sub.alignment = "CENTER"
         sub.label(text="Hide Mode")
-        body_box = main_col.box()
+        body_box = left_col.box()
         body_box.row().prop(self, "hide_mode", expand=True)
+
+        # 右カラム: Hide On
+        right_col = split.column(align=True)
+        header_box = right_col.box()
+        header_row = header_box.row(align=True)
+        header_row.scale_y = 0.85
+        sub = header_row.row(align=True)
+        sub.alignment = "CENTER"
+        sub.label(text="Hide On")
+        body_box = right_col.box()
+        col = body_box.column()
+        col.prop(self, "enable_on_play")
+        col.prop(self, "enable_on_transform")
 
         # --- Keymap セクション ---
         row = layout.row()
