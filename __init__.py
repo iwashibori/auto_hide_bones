@@ -291,11 +291,12 @@ class AutoHideBonesPreferences(bpy.types.AddonPreferences):
         sub.alignment = "CENTER"
         sub.label(text="Hide On")
         body_box = right_col.box()
-        col = body_box.column()
-        col.prop(self, "enable_on_play")
-        col.prop(self, "enable_on_transform")
+        row = body_box.row()
+        row.prop(self, "enable_on_play")
+        row.prop(self, "enable_on_transform")
 
         # --- Keymap セクション ---
+        layout.separator()
         row = layout.row()
 
         def _draw_km_column(parent, km_name, title):
